@@ -78,7 +78,7 @@ object ImageSources {
     }
 }
 
-/** Başlık/sonluk baytlarını ikili düzeyde onarır: JPEG (SOI/EOI), TIFF (II*/MM*), PDF (%PDF- / %%EOF). */
+/** Başlık ve sonluk baytlarını ikili düzeyde onarır: JPEG (SOI ve EOI), TIFF (II ve MM başlığı), PDF (%PDF- ve %%EOF). */
 object FileRepair {
     private val FF = 0xFF.toByte()
     private val D8 = 0xD8.toByte()
