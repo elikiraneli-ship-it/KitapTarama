@@ -41,9 +41,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
@@ -399,6 +396,7 @@ class BookScanActivity : AppCompatActivity() {
 
     private fun ocrPage() {
         val f = files.getOrNull(pos) ?: return
+        if (Ocr.engine == null) { toast("Metin tanıma (OCR) bu sürümde kapalı: ek bileşen gerekir"); return }
         toast("Metin tanınıyor...")
         pageExec.execute {
             val bmp = try { decodeForView(f, 3000) } catch (t: Throwable) { null }
@@ -428,13 +426,16 @@ class BookScanActivity : AppCompatActivity() {
     }
 }
 
-/** Türkçe karakterleri de okuyan ML Kit Latin metin tanıma (model uygulamayla birlikte gelir, çevrimdışı çalışır). */
+/**
+ * OCR için ek bağımlılık gerekmez: motor varsayılan olarak kapalıdır (null).
+ * İleride bir OCR kütüphanesi eklenirse yalnızca `Ocr.engine = { bmp, ok, err -> ... }` atanır.
+ */
 object Ocr {
+    var engine: ((Bitmap, (String) -> Unit, (String) -> Unit) -> Unit)? = null
+
     fun recognize(bmp: Bitmap, onOk: (String) -> Unit, onErr: (String) -> Unit) {
-        val rec = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        rec.process(InputImage.fromBitmap(bmp, 0))
-            .addOnSuccessListener { onOk(it.text); rec.close() }
-            .addOnFailureListener { onErr(it.message ?: "bilinmeyen hata"); rec.close() }
+        val e = engine
+        if (e == null) onErr("OCR bileşeni bu sürümde yok") else e(bmp, onOk, onErr)
     }
 }
 
