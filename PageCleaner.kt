@@ -1,8 +1,12 @@
 package tr.alihoca.turku.yeni.scan
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -14,6 +18,14 @@ object PageCleaner {
     private const val MARGIN = 100
     private const val BLOCK = 16
 
+    /** Eski/yeni adlarla çağrılabilsin diye. */
+    fun processBookPage(source: Bitmap): Bitmap = process(source)
+
+    /**
+     * Sıra: sayfayı bul-kırp -> A4 kutusuna ölçekle -> eğriliği düzelt (±6°) -> gölge/arka plan temizle -> A4 tuval.
+     * Yön (90/180/270) otomatik değiştirilmez: yanlış tahmin riski yüzünden; fotoğraflarda EXIF yönü uygulanır,
+     * PDF sayfaları zaten dik gelir.
+     */
     fun process(src: Bitmap): Bitmap {
         val r = detectPage(src)
         val cw = r[2] - r[0] + 1
@@ -23,11 +35,23 @@ object PageCleaner {
         val nh = max(1, (ch * scale).toInt())
 
         val cropped = Bitmap.createBitmap(src, r[0], r[1], cw, ch)
-        val scaled = Bitmap.createScaledBitmap(cropped, nw, nh, true)
+        var page = Bitmap.createScaledBitmap(cropped, nw, nh, true)
+        if (page !== cropped) cropped.recycle()
+
+        val angle = estimateSkew(page)
+        if (abs(angle) >= 0.4f) {
+            val rot = Bitmap.createBitmap(nw, nh, Bitmap.Config.ARGB_8888)
+            rot.eraseColor(Color.WHITE)
+            val c = Canvas(rot)
+            c.rotate(angle, nw / 2f, nh / 2f)
+            c.drawBitmap(page, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+            page.recycle()
+            page = rot
+        }
+
         val px = IntArray(nw * nh)
-        scaled.getPixels(px, 0, nw, 0, 0, nw, nh)
-        if (scaled !== cropped) cropped.recycle()
-        scaled.recycle()
+        page.getPixels(px, 0, nw, 0, 0, nw, nh)
+        page.recycle()
 
         flatten(px, nw, nh)
 
@@ -35,6 +59,49 @@ object PageCleaner {
         out.eraseColor(Color.WHITE)
         out.setPixels(px, 0, nw, (A4_W - nw) / 2, (A4_H - nh) / 2, nw, nh)
         return out
+    }
+
+    /** Koyu piksellerin satır profili en keskin olan açıyı (-6..+6°) bulur. Belirgin kazanç yoksa 0 döner. */
+    private fun estimateSkew(bmp: Bitmap): Float {
+        val sw = 500
+        val sh = max(50, (bmp.height * 500f / bmp.width).toInt())
+        val small = Bitmap.createScaledBitmap(bmp, sw, sh, true)
+        val px = IntArray(sw * sh)
+        small.getPixels(px, 0, sw, 0, 0, sw, sh)
+        if (small !== bmp) small.recycle()
+        val xs = IntArray(sw * sh)
+        val ys = IntArray(sw * sh)
+        var n = 0
+        for (y in (sh * 0.08f).toInt() until (sh * 0.92f).toInt()) {
+            for (x in (sw * 0.08f).toInt() until (sw * 0.92f).toInt()) {
+                val p = px[y * sw + x]
+                val l = (((p shr 16) and 255) * 299 + ((p shr 8) and 255) * 587 + (p and 255) * 114) / 1000
+                if (l < 120) { xs[n] = x - sw / 2; ys[n] = y - sh / 2; n++ }
+            }
+        }
+        if (n < 200) return 0f
+        val off = sw + sh
+        val hist = IntArray(2 * off + 2)
+        fun score(deg: Float): Long {
+            java.util.Arrays.fill(hist, 0)
+            val rad = Math.toRadians(deg.toDouble())
+            val sn = sin(rad).toFloat()
+            val cs = cos(rad).toFloat()
+            for (i in 0 until n) hist[(xs[i] * sn + ys[i] * cs).toInt() + off]++
+            var s = 0L
+            for (v in hist) s += v.toLong() * v
+            return s
+        }
+        val base = score(0f)
+        var best = 0f
+        var bestScore = base
+        var a = -6f
+        while (a <= 6f) {
+            val sc = score(a)
+            if (sc > bestScore) { bestScore = sc; best = a }
+            a += 0.25f
+        }
+        return if (bestScore > base * 1.03) best else 0f
     }
 
     /** Orta bölgenin parlaklık profiline göre en geniş "beyaz" şeridi (sayfayı) bulur. [sol, üst, sağ, alt] */
@@ -211,5 +278,11 @@ object PageCleaner {
             out[y * gw + x] = s / n
         }
         return out
+    }
+
+    /** Sayfayı 90° döndürür (saat yönü). Kaynak bitmap geri bırakılmaz; çağıran recycle eder. */
+    fun rotate90(src: Bitmap, clockwise: Boolean = true): Bitmap {
+        val m = android.graphics.Matrix().apply { postRotate(if (clockwise) 90f else -90f) }
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
     }
 }

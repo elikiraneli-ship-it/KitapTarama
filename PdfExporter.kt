@@ -9,21 +9,33 @@ import android.provider.MediaStore
 import java.io.File
 import java.io.OutputStream
 
-/** İşlenmiş sayfaları (JPEG) belleği şişirmeden tek bir A4 PDF'e dizer ve İndirilenler'e kaydeder. */
+/** İşlenmiş sayfaları belleği şişirmeden PDF'e dizer; JPG ve metin dosyalarını İndirilenler'e kaydeder. */
 object PdfExporter {
+    private const val SUBDIR = "KitapOkuyucu"
 
     fun exportToDownloads(ctx: Context, book: BookInfo): Uri? {
         val pages = File(book.dir, "pages").listFiles { f -> f.extension == "jpg" }?.sortedBy { it.name } ?: return null
         if (pages.isEmpty()) return null
-        val safe = book.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return saveStream(ctx, safeName(book.name) + ".pdf", "application/pdf") { writePdf(pages, it) }
+    }
+
+    fun saveFile(ctx: Context, src: File, displayName: String, mime: String): Uri? =
+        saveStream(ctx, safeName(displayName), mime) { out -> src.inputStream().use { it.copyTo(out) } }
+
+    fun saveText(ctx: Context, text: String, displayName: String): Uri? =
+        saveStream(ctx, safeName(displayName), "text/plain") { it.write(text.toByteArray(Charsets.UTF_8)) }
+
+    private fun safeName(n: String) = n.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+
+    private fun saveStream(ctx: Context, name: String, mime: String, writer: (OutputStream) -> Unit): Uri? {
         val cv = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, "$safe.pdf")
-            put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + SUBDIR)
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
         val uri = ctx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv) ?: return null
-        ctx.contentResolver.openOutputStream(uri)?.use { writePdf(pages, it) }
+        ctx.contentResolver.openOutputStream(uri)?.use { writer(it) }
         cv.clear()
         cv.put(MediaStore.Downloads.IS_PENDING, 0)
         ctx.contentResolver.update(uri, cv, null, null)
@@ -55,12 +67,16 @@ object PdfExporter {
             BitmapFactory.decodeFile(f.path, opt)
             val bytes = f.readBytes()
             val pg = 3 + 3 * i; val ct = pg + 1; val im = pg + 2
+            // Döndürülmüş (yatay) sayfalar yatay A4 olur
+            val landscape = opt.outWidth > opt.outHeight
+            val pw = if (landscape) "841.89" else "595.28"
+            val ph = if (landscape) "595.28" else "841.89"
+            val cs = "q $pw 0 0 $ph 0 0 cm /Im0 Do Q"
             obj(pg) {
-                o.w("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] " +
+                o.w("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 $pw $ph] " +
                     "/Resources << /XObject << /Im0 $im 0 R >> >> /Contents $ct 0 R >>\n")
             }
-            val content = "q 595.28 0 0 841.89 0 0 cm /Im0 Do Q"
-            obj(ct) { o.w("<< /Length ${content.length} >>\nstream\n$content\nendstream\n") }
+            obj(ct) { o.w("<< /Length ${cs.length} >>\nstream\n$cs\nendstream\n") }
             obj(im) {
                 o.w("<< /Type /XObject /Subtype /Image /Width ${opt.outWidth} /Height ${opt.outHeight} " +
                     "/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.size} >>\nstream\n")
